@@ -481,25 +481,87 @@ radutmp {
 
 **文件位置**: [raddb/radiusd.conf.in](file:///workspace/raddb/radiusd.conf.in)
 
-主要配置项:
+主要配置项说明:
+
+#### 基本配置
 ```
 # 服务器名称
 name = radiusd
 
-# 日志配置
+# 路径配置
+prefix = /usr
+sysconfdir = ${prefix}/etc
+localstatedir = ${prefix}/var
+logdir = ${localstatedir}/log/radius
+confdir = ${sysconfdir}/raddb
+radacctdir = ${localstatedir}/log/radius/radacct
+libdir = ${prefix}/lib
+```
+
+#### 请求处理配置
+```
+request {
+    # 最大请求数（每个线程）
+    max = 16384
+    
+    # 请求超时时间（秒）
+    timeout = 30
+    
+    # 请求重用配置
+    reuse {
+        min = 10
+        # max = 100
+        cleanup_interval = 30s
+    }
+}
+```
+
+#### 日志配置
+```
 log {
+    # 日志目标：file/syslog/stdout/stderr
     destination = file
-    file = ${logdir}/radius.log
+    
+    # 是否彩色输出
     colourise = yes
+    
+    # 日志文件路径
+    file = ${logdir}/radius.log
+    
+    # syslog配置
+    syslog_facility = daemon
+    
+    # 是否隐藏敏感信息
+    suppress_secrets = yes
 }
+```
 
-# 线程池配置
+#### 线程池配置
+```
 thread pool {
-    num_workers = 1
+    # 网络线程数
+    # num_networks = 1
+    
+    # 工作线程数
+    # num_workers = 1
+    
+    # OpenSSL异步上下文池配置
+    # openssl_async_pool_init = 64
+    # openssl_async_pool_max = 1024
 }
+```
 
-# 安全配置
+#### 安全配置
+```
 security {
+    # 运行服务器的用户和组
+    # user = radius
+    # group = radius
+    
+    # 是否允许核心转储
+    allow_core_dumps = no
+    
+    # 最大属性数
     max_attributes = 200
 }
 ```
@@ -508,12 +570,375 @@ security {
 
 **文件位置**: [raddb/clients.conf](file:///workspace/raddb/clients.conf)
 
-配置示例:
+客户端配置详细说明:
+
 ```
 client localhost {
+    # 客户端IP地址或网络范围（可使用CIDR格式）
     ipaddr = 127.0.0.1
+    # ipv4addr = *
+    # ipv6addr = ::
+    
+    # 传输协议（udp/tcp/*）
+    proto = *
+    
+    # 共享密钥（必须修改！）
     secret = testing123
+    
+    # 是否要求Message-Authenticator（yes/no/auto）
     require_message_authenticator = auto
+    
+    # Proxy-State限制（yes/no/auto）
+    limit_proxy_state = auto
+    
+    # TCP连接限制
+    limit {
+        # 最大连接数
+        max_connections = 16
+        
+        # 连接生命周期（秒），0表示永久
+        lifetime = 0
+        
+        # 空闲超时（秒）
+        idle_timeout = 30
+    }
+    
+    # 短名称（可选）
+    # shortname = localhost
+}
+```
+
+**客户端配置参数说明**:
+- `ipaddr/ipv4addr/ipv6addr`: 客户端地址，支持单个IP或CIDR网络范围
+- `secret`: 与NAS设备共享的密钥，用于加密和签名RADIUS数据包
+- `require_message_authenticator`: 强制要求Access-Request包含Message-Authenticator属性，防止爆破攻击
+- `limit_proxy_state`: 限制Proxy-State属性以防止某些攻击
+
+### 模块配置详解
+
+#### PAP模块配置
+
+**文件位置**: [raddb/mods-available/pap](file:///workspace/raddb/mods-available/pap)
+
+```
+pap {
+    # 是否自动识别base64或hex编码的密码
+    # normalise = no
+    
+    # 使用哪个属性作为用户密码
+    # password_attribute = User-Password
+}
+```
+
+**PAP支持的密码格式**:
+- `Password.Cleartext`: 明文密码
+- `Password.Crypt`: Unix crypt加密密码
+- `Password.MD5`: MD5哈希密码
+- `Password.SMD5`: 带盐的MD5哈希
+- `Password.SHA1`: SHA1哈希密码
+- `Password.SSHA`: 带盐的SHA1哈希
+- `Password.SHA2/SHA224/SHA256/SHA384/SHA512`: SHA2系列哈希
+- `Password.SSHA2-224/SSHA2-256/SSHA2-384/SSHA2-512`: 带盐的SHA2系列哈希
+- `Password.NT/MD4`: Windows NT哈希
+- `Password.LM`: Windows LM哈希
+
+#### CHAP模块配置
+
+**文件位置**: [raddb/mods-available/chap](file:///workspace/raddb/mods-available/chap)
+
+CHAP模块不需要配置，会自动处理CHAP-Challenge和CHAP-Password属性。
+
+**注意**: CHAP认证需要访问用户的明文密码。
+
+#### Files模块配置
+
+**文件位置**: [raddb/mods-available/files](file:///workspace/raddb/mods-available/files)
+
+```
+files {
+    # 模块配置目录
+    moddir = ${modconfdir}/${.:instance}
+    
+    # 用于匹配的键属性
+    # key = "%{Stripped-User-Name || User-Name}"
+    
+    # 用户文件路径
+    filename = ${moddir}/authorize
+    
+    # 匹配后设置的属性
+    # match_attr = control.User-Category
+    
+    # v3兼容性模式
+    # v3_compat = no
+}
+```
+
+**users文件格式说明**:
+```
+用户名  检查项...
+        回复项...
+
+示例:
+user1  Cleartext-Password := "password1"
+       Service-Type = Framed-User,
+       Framed-Protocol = PPP,
+       Framed-IP-Address = 192.168.1.10
+```
+
+#### SQL模块配置
+
+**文件位置**: [raddb/mods-available/sql](file:///workspace/raddb/mods-available/sql)
+
+```
+sql {
+    # SQL方言：cassandra/firebird/mysql/mssql/oracle/postgresql/sqlite
+    dialect = "sqlite"
+    
+    # 驱动模块，通常与方言相同
+    driver = "${dialect}"
+    
+    # 包含驱动特定配置
+    $INCLUDE ${modconfdir}/sql/driver/${driver}
+    
+    # 数据库连接信息
+    # server = "localhost"
+    # port = 3306
+    # login = "radius"
+    # password = "radpass"
+    
+    # 数据库名称
+    radius_db = "radius"
+    
+    # Oracle连接字符串格式
+    # radius_db = "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SID=your_sid)))"
+    
+    # PostgreSQL连接字符串格式
+    # radius_db = "dbname=radius host=localhost user=radius password=radpass"
+    
+    # 计费表配置
+    acct_table1 = "radacct"
+    acct_table2 = "radacct"
+    
+    # 认证后记录表
+    postauth_table = "radpostauth"
+    
+    # 检查项表
+    authcheck_table = "radcheck"
+    groupcheck_table = "radgroupcheck"
+    
+    # 回复项表
+    authreply_table = "radreply"
+    groupreply_table = "radgroupreply"
+    
+    # 用户组表
+    usergroup_table = "radusergroup"
+    
+    # 是否读取组信息
+    # read_groups = yes
+    
+    # 是否读取用户配置文件
+    # read_profiles = yes
+    
+    # SQL查询日志文件
+    # logfile = ${logdir}/sqllog.sql
+    
+    # 查询超时（Cassandra和unixodbc）
+    # query_timeout = 5
+    
+    # 连接池配置
+    pool {
+        # 初始化连接数
+        start = 0
+        
+        # 最小连接数
+        min = 1
+        
+        # 最大连接数
+        max = 100
+        
+        # 同时连接数
+        connecting = 2
+        
+        # 连接使用次数限制（0表示无限）
+        uses = 0
+        
+        # 连接生命周期（秒）
+        lifetime = 0
+        
+        # 打开延迟（秒）
+        # open_delay = 0.2
+        
+        # 关闭延迟（秒）
+        # close_delay = 10
+        
+        # 管理间隔（秒）
+        # manage_interval = 0.2
+    }
+    
+    # 组属性名称
+    group_attribute = "${.:instance}-Group"
+    
+    # 是否缓存组信息
+    # cache_groups = no
+    
+    # 记录成功查询编号的属性
+    # query_number_attribute = 'Query-Number'
+    
+    # 包含数据库特定查询
+    $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+}
+```
+
+**SQL数据库表结构**:
+- `radcheck`: 用户检查项
+- `radreply`: 用户回复项
+- `radgroupcheck`: 用户组检查项
+- `radgroupreply`: 用户组回复项
+- `radusergroup`: 用户-组映射
+- `radacct`: 计费记录
+- `radpostauth`: 认证后记录
+
+#### EAP模块配置
+
+**文件位置**: [raddb/mods-available/eap](file:///workspace/raddb/mods-available/eap)
+
+```
+eap {
+    # 是否要求EAP身份包含realm（nai/yes/no）
+    # require_identity_realm = nai
+    
+    # 默认EAP类型
+    # default_eap_type = md5
+    
+    # 是否忽略未知的EAP类型
+    ignore_unknown_eap_types = no
+    
+    # 允许的EAP类型列表
+    type = md5
+    # type = pwd
+    type = gtc
+    type = tls
+    type = ttls
+    type = mschapv2
+    type = peap
+    # type = fast
+    # type = aka
+    # type = sim
+    
+    # EAP-MD5配置（不推荐用于无线）
+    md5 {
+    }
+    
+    # EAP-PWD配置
+    pwd {
+        # 椭圆曲线组
+        group = 19
+        
+        # 服务器标识
+        server_id = theserver@example.com
+        
+        # 分片大小
+        fragment_size = 1020
+    }
+    
+    # EAP-GTC配置
+    gtc {
+        # 挑战文本
+        challenge = "Password: "
+        
+        # 认证模式（PAP/Local/Accept）
+        auth_type = PAP
+    }
+    
+    # TLS配置（被tls/ttls/peap/fast共享）
+    tls-config tls-common {
+        # 私钥密码
+        private_key_password = whatever
+        
+        # 证书文件
+        certificate_file = ${certdir}/server.pem
+        
+        # CA证书文件
+        ca_file = ${certdir}/ca.pem
+        
+        # DH参数文件
+        dh_file = ${certdir}/dh
+        
+        # 随机数源
+        random_file = /dev/urandom
+        
+        # 是否要求客户端证书
+        # client_cert = yes
+        
+        # 证书验证深度
+        # verify_depth = 0
+        
+        # CRL检查
+        # check_crl = no
+        
+        # 证书生命周期检查
+        # check_cert_valid = yes
+        
+        # 允许的TLS版本
+        # tls_min_version = "1.0"
+        # tls_max_version = "1.3"
+        
+        # 加密套件
+        # cipher_list = "HIGH"
+    }
+    
+    # EAP-TLS配置
+    tls {
+        tls = tls-common
+        
+        # 虚拟服务器配置
+        # virtual_server = check-eap-tls
+    }
+    
+    # EAP-TTLS配置
+    ttls {
+        tls = tls-common
+        
+        # 默认内层认证
+        default_eap_type = mschapv2
+        
+        # 是否复制属性到内层请求
+        # copy_request_to_tunnel = no
+        
+        # 是否使用隧道化回复属性
+        # use_tunneled_reply = no
+        
+        # 内层虚拟服务器
+        virtual_server = inner-tunnel
+    }
+    
+    # EAP-PEAP配置
+    peap {
+        tls = tls-common
+        
+        # 默认内层认证
+        default_eap_type = mschapv2
+        
+        # 是否复制属性到内层请求
+        # copy_request_to_tunnel = no
+        
+        # 是否使用隧道化回复属性
+        # use_tunneled_reply = no
+        
+        # 内层虚拟服务器
+        virtual_server = inner-tunnel
+    }
+    
+    # EAP-MSCHAPv2配置
+    mschapv2 {
+        # 是否发送EAP-Success
+        send_error = yes
+        
+        # 是否使用NT域
+        use_mppe = yes
+        require_encryption = yes
+        require_strong = yes
+    }
 }
 ```
 
@@ -521,14 +946,91 @@ client localhost {
 
 **目录**: [raddb/sites-available/](file:///workspace/raddb/sites-available/)
 
-主要处理阶段:
-- `recv Access-Request`: 接收认证请求
-- `authorize`: 授权阶段
-- `authenticate`: 认证阶段
-- `post-auth`: 认证后处理
-- `recv Accounting-Request`: 接收计费请求
-- `preacct`: 计费前处理
-- `accounting`: 计费处理
+**default虚拟服务器结构**:
+
+```
+server default {
+    # 协议命名空间
+    namespace = radius
+    
+    # 日志配置（可选）
+    # log = some_other_logging_destination
+    
+    # RADIUS协议特定配置
+    radius {
+        # Access-Request特定配置
+        Access-Request {
+            # 会话管理（主要用于EAP）
+            session {
+                # 最大会话数
+                # max = 4096
+                
+                # 最大轮次
+                # max_rounds = 40
+                
+                # 会话超时（秒）
+                # timeout = 15
+                
+                # 去重键
+                # dedup_key = Calling-Station-Id
+            }
+        }
+    }
+    
+    # 本地字典定义
+    dictionary {
+        # string my_attribute
+    }
+    
+    # 监听配置
+    listen {
+        type = auth
+        ipaddr = *
+        port = 1812
+        # proto = udp
+        # interface = eth0
+    }
+    
+    listen {
+        type = acct
+        ipaddr = *
+        port = 1813
+    }
+    
+    # 主要处理阶段
+    authorize { ... }
+    authenticate { ... }
+    preacct { ... }
+    accounting { ... }
+    post-auth { ... }
+}
+```
+
+**主要处理阶段说明**:
+
+1. **recv Access-Request**: 接收认证请求，初始化处理
+2. **authorize**: 授权前检查，收集用户信息，选择认证方式
+3. **authenticate**: 执行实际的认证
+4. **post-auth**: 认证后处理，添加回复属性，发送响应
+5. **recv Accounting-Request**: 接收计费请求
+6. **preacct**: 计费前处理，验证计费请求
+7. **accounting**: 记录计费信息
+8. **session**: 会话管理
+
+### 配置启用方法
+
+模块启用:
+```bash
+cd /etc/raddb/mods-enabled
+ln -s ../mods-available/sql
+ln -s ../mods-available/ldap
+```
+
+虚拟服务器启用:
+```bash
+cd /etc/raddb/sites-enabled
+ln -s ../sites-available/default
+```
 
 ---
 
